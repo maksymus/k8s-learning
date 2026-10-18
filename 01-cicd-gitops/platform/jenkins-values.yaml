@@ -1,0 +1,78 @@
+controller:
+  admin:
+    username: admin
+    # password is passed with --set from scripts/lib.sh
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+
+  # Installed on top of the chart defaults (kubernetes, workflow-aggregator, git, configuration-as-code)
+  additionalPlugins:
+    - job-dsl
+    - junit
+    - pipeline-stage-view
+
+  # Mounted into the controller so JCasC can reference them as ${<secret>-<key>}.
+  # Created by 02-gitea.sh and 03-sonarqube.sh.
+  additionalExistingSecrets:
+    - name: gitea-credentials
+      keyName: username
+    - name: gitea-credentials
+      keyName: token
+    - name: sonar-credentials
+      keyName: token
+
+  # Jenkins Configuration as Code: no clicking through the UI.
+  # Rebuild the cluster and Jenkins comes back identical.
+  JCasC:
+    configScripts:
+      credentials: |
+        credentials:
+          system:
+            domainCredentials:
+              - credentials:
+                  - usernamePassword:
+                      scope: GLOBAL
+                      id: gitea
+                      username: "${gitea-credentials-username}"
+                      password: "${gitea-credentials-token}"
+                  - string:
+                      scope: GLOBAL
+                      id: sonar-token
+                      secret: "${sonar-credentials-token}"
+      jobs: |
+        jobs:
+          - script: |
+              pipelineJob('demo-app') {
+                description('CI for demo-app. Polls Gitea every 2 minutes.')
+                definition {
+                  cpsScm {
+                    scm {
+                      git {
+                        remote {
+                          url('http://gitea-http.gitea.svc.cluster.local:3000/gitea_admin/demo-app.git')
+                          credentials('gitea')
+                        }
+                        branch('*/main')
+                      }
+                    }
+                    scriptPath('Jenkinsfile')
+                    lightweight(true)
+                  }
+                }
+                properties {
+                  pipelineTriggers {
+                    triggers {
+                      pollSCM { scmpoll_spec('H/2 * * * *') }
+                    }
+                  }
+                }
+              }
+
+persistence:
+  enabled: true
+  size: 4Gi

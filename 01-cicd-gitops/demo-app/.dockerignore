@@ -1,0 +1,9 @@
+.git
+tests
+reports
+ci
+.scannerwork
+.pytest_cache
+**/__pycache__
+.coverage
+Jenkinsfile

@@ -1,0 +1,9 @@
+configs:
+  params:
+    server.insecure: true # plain HTTP behind kubectl port-forward
+  cm:
+    timeout.reconciliation: 60s # check Git every minute instead of every 3
+dex:
+  enabled: false
+notifications:
+  enabled: false

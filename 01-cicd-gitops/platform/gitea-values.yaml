@@ -1,0 +1,37 @@
+# Gitea is our in-cluster "GitHub": it hosts the app repo and the manifests repo.
+# Trimmed down to a single pod: SQLite + in-memory cache instead of the chart's default Postgres/Valkey clusters.
+postgresql-ha:
+  enabled: false
+postgresql:
+  enabled: false
+valkey-cluster:
+  enabled: false
+valkey:
+  enabled: false
+redis-cluster: # older chart versions
+  enabled: false
+redis:
+  enabled: false
+
+persistence:
+  enabled: true
+  size: 2Gi
+
+gitea:
+  admin:
+    username: gitea_admin
+    email: admin@gitea.local
+    # password is passed with --set from scripts/lib.sh
+  config:
+    server:
+      ROOT_URL: http://localhost:3000/
+    database:
+      DB_TYPE: sqlite3
+    session:
+      PROVIDER: memory
+    cache:
+      ADAPTER: memory
+    queue:
+      TYPE: level
+    repository:
+      DEFAULT_BRANCH: main

@@ -1,0 +1,19 @@
+# SonarQube Community Build, embedded database (fine for learning, not for production).
+community:
+  enabled: true
+monitoringPasscode: "k8s-learning-monitoring"
+
+postgresql:
+  enabled: false
+
+persistence:
+  enabled: true
+  size: 5Gi
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 2Gi
+  limits:
+    cpu: "2"
+    memory: 4Gi

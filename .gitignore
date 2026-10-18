@@ -1,0 +1,8 @@
+# Working copies of the Gitea repos (created by 01-cicd-gitops/scripts/02-gitea.sh)
+01-cicd-gitops/work/
+
+__pycache__/
+.pytest_cache/
+.coverage
+reports/
+.DS_Store

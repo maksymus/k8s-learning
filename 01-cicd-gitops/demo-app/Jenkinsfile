@@ -1,0 +1,104 @@
+// CI for demo-app: test -> quality gate -> build & push image -> bump tag in the GitOps repo.
+//
+// Note what is NOT here: no kubectl, no cluster credentials. Jenkins's job ends at a Git commit;
+// Argo CD notices that commit and does the deploy. That separation is the core GitOps idea.
+pipeline {
+  agent {
+    kubernetes {
+      yamlFile 'ci/agent-pod.yaml'
+    }
+  }
+
+  options {
+    timeout(time: 20, unit: 'MINUTES')
+    disableConcurrentBuilds()
+  }
+
+  environment {
+    // Same registry, two names: pods push via the Docker network name,
+    // while kind nodes pull via localhost:5001 (mapped in 01-cluster.sh).
+    PUSH_REGISTRY  = 'kind-registry:5000'
+    IMAGE          = 'demo-app'
+    SONAR_HOST_URL = 'http://sonarqube-sonarqube.sonarqube.svc.cluster.local:9000'
+    MANIFESTS_REPO = 'gitea-http.gitea.svc.cluster.local:3000/gitea_admin/demo-app-manifests.git'
+  }
+
+  stages {
+    stage('Prepare') {
+      steps {
+        script {
+          // Immutable, traceable tag: build number + commit. Never deploy ":latest".
+          env.TAG = "${env.BUILD_NUMBER}-${env.GIT_COMMIT.substring(0, 7)}"
+        }
+        echo "Image tag: ${env.TAG}"
+      }
+    }
+
+    stage('Unit tests') {
+      steps {
+        container('python') {
+          sh '''
+            rm -rf reports && mkdir reports
+            pip install --quiet --root-user-action=ignore -r requirements-dev.txt
+            pytest --junitxml=reports/junit.xml --cov=demo_app --cov-report=xml:reports/coverage.xml
+          '''
+        }
+      }
+      post {
+        always { junit 'reports/junit.xml' }
+      }
+    }
+
+    stage('Quality gate') {
+      steps {
+        container('sonar') {
+          withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+            // qualitygate.wait makes the scanner block until SonarQube computes the gate,
+            // and exit non-zero if it fails -> the build stops here, nothing ships.
+            sh 'sonar-scanner -Dsonar.qualitygate.wait=true -Dsonar.projectVersion=${TAG}'
+          }
+        }
+      }
+    }
+
+    stage('Build & push image') {
+      steps {
+        container('buildkit') {
+          sh '''
+            until buildctl debug workers >/dev/null 2>&1; do sleep 1; done
+            buildctl build \
+              --frontend dockerfile.v0 \
+              --local context=. --local dockerfile=. \
+              --opt build-arg:APP_VERSION=${TAG} \
+              --output type=image,name=${PUSH_REGISTRY}/${IMAGE}:${TAG},push=true,registry.insecure=true
+          '''
+        }
+      }
+    }
+
+    stage('Update GitOps repo') {
+      steps {
+        container('git') {
+          withCredentials([usernamePassword(credentialsId: 'gitea',
+                                            usernameVariable: 'GIT_USER',
+                                            passwordVariable: 'GIT_TOKEN')]) {
+            sh '''
+              rm -rf manifests
+              git clone --quiet "http://${GIT_USER}:${GIT_TOKEN}@${MANIFESTS_REPO}" manifests
+              cd manifests
+              sed -i "s|newTag: .*|newTag: \\"${TAG}\\"|" overlays/dev/kustomization.yaml
+              git diff
+              git -c user.name=Jenkins -c user.email=jenkins@ci.local \
+                commit -am "ci: deploy demo-app ${TAG} to dev"
+              git push --quiet origin main
+            '''
+          }
+        }
+      }
+    }
+  }
+
+  post {
+    success { echo "Committed ${env.TAG} to the manifests repo. Argo CD will roll it out." }
+  }
+}

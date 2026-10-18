@@ -1,0 +1,41 @@
+# Pod that Jenkins spins up for every build (Kubernetes plugin), then deletes.
+# One container per tool: each stage picks the container it needs with `container('<name>')`.
+# All containers share the workspace volume, so files flow between stages.
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+    - name: python
+      image: python:3.12-slim
+      command: ["cat"]
+      tty: true
+    - name: sonar
+      image: sonarsource/sonar-scanner-cli:latest
+      imagePullPolicy: IfNotPresent
+      command: ["cat"]
+      tty: true
+    # BuildKit builds images without a Docker daemon.
+    # privileged is a shortcut for this project; project 2 replaces it with rootless mode.
+    - name: buildkit
+      image: moby/buildkit:v0.20.0
+      securityContext:
+        privileged: true
+      volumeMounts:
+        - name: buildkit-state
+          mountPath: /var/lib/buildkit
+        # Registry mirror settings, only present when the cluster runs on a remote WSL host
+        # (see scripts/01-cluster.sh). Empty otherwise, and BuildKit uses its defaults.
+        - name: buildkitd-config
+          mountPath: /etc/buildkit
+    - name: git
+      image: alpine/git:latest
+      imagePullPolicy: IfNotPresent
+      command: ["cat"]
+      tty: true
+  volumes:
+    - name: buildkit-state
+      emptyDir: {}
+    - name: buildkitd-config
+      configMap:
+        name: buildkitd-config
+        optional: true
