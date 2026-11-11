@@ -1,0 +1,21 @@
+# Kyverno trimmed to what this lab uses: admission only, one replica of each.
+admissionController:
+  replicas: 1
+  # caCertificates.data is the lab CA, passed with --set-file by 01-platform.sh. It replaces
+  # Kyverno's trust bundle, which is fine here: the policy only looks at secure-registry.
+  container:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+
+# Background scans, policy reports and cleanup policies are useful in production,
+# but each one is another controller competing for memory here.
+backgroundController:
+  enabled: false
+reportsController:
+  enabled: false
+cleanupController:
+  enabled: false

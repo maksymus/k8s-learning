@@ -4,9 +4,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository purpose
 
-A series of hands-on Kubernetes learning projects, each in its own numbered directory (`01-cicd-gitops/`, …). The root `README.md` lists planned projects; only project 1 exists so far. Project 2 (DevSecOps) is meant to extend project 1 by fixing the "Shortcuts taken" listed in `01-cicd-gitops/README.md` — keep those shortcuts intact in project 1 rather than "fixing" them there.
+A series of hands-on Kubernetes learning projects, each in its own numbered directory (`01-cicd-gitops/`, …). The root `README.md` lists planned projects. Project 2 (`02-devsecops/`) extends project 1 by fixing the "Shortcuts taken" listed in `01-cicd-gitops/README.md` — keep those shortcuts intact in project 1 rather than "fixing" them there.
 
 Target machine: Intel i5, 4 cores, 16 GB RAM, no GPU. Run only one project's stack at a time; project 1 needs Docker Desktop memory ≥ 10 GB.
+
+## Project 2: `02-devsecops/`
+
+Holds only the changes on top of a running project 1 stack; its `scripts/lib.sh` sources project 1's. Run `scripts/01`–`06` in order, with the same `REMOTE_HOST` as project 1. `04-gitops.sh` copies `demo-app/` and `demo-app-manifests/` over `01-cicd-gitops/work/` and pushes to Gitea.
+
+- Images live in `secure-registry:5000` (TLS, private CA), not `kind-registry`. Kyverno can't read cosign signatures over plain HTTP, and `allowInsecureRegistry` didn't help (tested on 1.19.2).
+- CI edits the `digest:` line in `overlays/dev/kustomization.yaml`, replacing project 1's `newTag:`. Keep its format so the sed still matches.
+- `.keys/` holds the signing key, CA and sealing key backup. It's gitignored and must stay out of the public repo.
+- Jenkins uses `installPlugins: false` in `platform/jenkins-overrides.yaml`, so plugins come from the PVC that project 1's `04-jenkins.sh` populated. Adding a plugin means changing that.
+- Remote mode adds `cache-ghcr-io` (:5013).
 
 ## Project 1: `01-cicd-gitops/`
 
@@ -39,7 +49,7 @@ uvicorn demo_app.main:app --port 8000
 
 ### Architecture (the key idea: CI and CD are split by a Git commit)
 
-- `demo-app/` and `demo-app-manifests/` hold the **starting state** and are tracked in the root `k8s-learning` repo (GitHub, private). `02-gitea.sh` copies them on first run to gitignored `work/demo-app` and `work/demo-app-manifests`. Those are **separate git repos** (remote `gitea` on `localhost:3000`, which only works while `ui.sh` is forwarding), and the exercises happen there. A change meant for the lesson itself (e.g. `ci/agent-pod.yaml`) goes in the originals *and*, to reach the running Jenkins, must also be committed in `work/demo-app` and pushed to Gitea.
+- `demo-app/` and `demo-app-manifests/` hold the **starting state** and are tracked in the root `k8s-learning` repo (GitHub, public). `02-gitea.sh` copies them on first run to gitignored `work/demo-app` and `work/demo-app-manifests`. Those are **separate git repos** (remote `gitea` on `localhost:3000`, which only works while `ui.sh` is forwarding), and the exercises happen there. A change meant for the lesson itself (e.g. `ci/agent-pod.yaml`) goes in the originals *and*, to reach the running Jenkins, must also be committed in `work/demo-app` and pushed to Gitea.
 - **Jenkins never touches the cluster.** `demo-app/Jenkinsfile` runs in a per-build agent pod (`demo-app/ci/agent-pod.yaml`, one container per tool: `python`, `sonar`, `buildkit`, `git`) and does: tests → `sonar-scanner -Dsonar.qualitygate.wait=true` → BuildKit build/push to `kind-registry:5000` → clone `demo-app-manifests` and `sed` the `newTag:` line in `overlays/dev/kustomization.yaml`, then commit and push. That `newTag` line is the only thing CI edits; keep its format so the sed still matches.
 - **Argo CD is the only deployer.** `argocd/demo-app-dev.yaml` syncs `demo-app-manifests/overlays/dev` into namespace `demo-dev` with `prune` + `selfHeal`.
 - **Registry has two names:** pods push to `kind-registry:5000` (Docker network name); kind nodes pull `localhost:5001/...`, mapped via `/etc/containerd/certs.d` set up in `01-cluster.sh` (enabled by `cluster/kind-config.yaml`).

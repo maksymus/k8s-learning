@@ -1,0 +1,146 @@
+// CI for demo-app, project 2: test -> quality gate -> build -> scan -> SBOM -> sign -> bump digest.
+//
+// The order is the point. The image is pushed before the scan, because Trivy reads it from the
+// registry, so "it's in the registry" proves nothing. The signature is what says it passed:
+// a failed scan stops the build before signing, and the cluster refuses unsigned images.
+pipeline {
+  agent {
+    kubernetes {
+      yamlFile 'ci/agent-pod.yaml'
+    }
+  }
+
+  options {
+    timeout(time: 30, unit: 'MINUTES')
+    disableConcurrentBuilds()
+  }
+
+  environment {
+    REGISTRY       = 'secure-registry:5000'
+    IMAGE          = 'demo-app'
+    SONAR_HOST_URL = 'http://sonarqube-sonarqube.sonarqube.svc.cluster.local:9000'
+    MANIFESTS_REPO = 'gitea-http.gitea.svc.cluster.local:3000/gitea_admin/demo-app-manifests.git'
+  }
+
+  stages {
+    stage('Prepare') {
+      steps {
+        script {
+          env.TAG = "${env.BUILD_NUMBER}-${env.GIT_COMMIT.substring(0, 7)}"
+        }
+        echo "Image tag: ${env.TAG}"
+      }
+    }
+
+    stage('Unit tests') {
+      steps {
+        container('python') {
+          sh '''
+            rm -rf reports && mkdir reports
+            pip install --quiet --root-user-action=ignore -r requirements-dev.txt
+            pytest --junitxml=reports/junit.xml --cov=demo_app --cov-report=xml:reports/coverage.xml
+          '''
+        }
+      }
+      post {
+        always { junit 'reports/junit.xml' }
+      }
+    }
+
+    stage('Quality gate') {
+      steps {
+        container('sonar') {
+          withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+            sh 'sonar-scanner -Dsonar.qualitygate.wait=true -Dsonar.projectVersion=${TAG}'
+          }
+        }
+      }
+    }
+
+    stage('Build & push image') {
+      steps {
+        container('buildkit') {
+          sh '''
+            until buildctl debug workers >/dev/null 2>&1; do sleep 1; done
+            buildctl build \
+              --frontend dockerfile.v0 \
+              --local context=. --local dockerfile=. \
+              --opt build-arg:APP_VERSION=${TAG} \
+              --metadata-file build-metadata.json \
+              --output type=image,name=${REGISTRY}/${IMAGE}:${TAG},push=true
+          '''
+        }
+        container('tools') {
+          script {
+            // From here on the image is named by digest: a tag can be moved, a digest can't.
+            env.DIGEST = sh(returnStdout: true,
+                            script: "jq -r '.[\"containerimage.digest\"]' build-metadata.json").trim()
+          }
+        }
+        echo "Image digest: ${env.DIGEST}"
+      }
+    }
+
+    stage('Scan & SBOM') {
+      steps {
+        container('tools') {
+          // --ignore-unfixed: fail only on what an upgrade could actually fix today.
+          sh '''
+            trivy image --image-src remote --quiet --scanners vuln --ignore-unfixed \
+              --severity HIGH,CRITICAL --exit-code 1 \
+              "${REGISTRY}/${IMAGE}@${DIGEST}"
+            trivy image --image-src remote --quiet --format cyclonedx --output reports/sbom.cdx.json \
+              "${REGISTRY}/${IMAGE}@${DIGEST}"
+          '''
+        }
+      }
+      post {
+        always { archiveArtifacts artifacts: 'reports/sbom.cdx.json', allowEmptyArchive: true }
+      }
+    }
+
+    stage('Sign') {
+      steps {
+        container('tools') {
+          withCredentials([string(credentialsId: 'cosign-key', variable: 'COSIGN_PRIVATE_KEY'),
+                           string(credentialsId: 'cosign-password', variable: 'COSIGN_PASSWORD')]) {
+            // An empty signing config means no public transparency log: this is a private lab.
+            sh '''
+              cosign signing-config create --out signing-config.json
+              cosign sign --yes --key env://COSIGN_PRIVATE_KEY --signing-config signing-config.json \
+                "${REGISTRY}/${IMAGE}@${DIGEST}"
+              cosign attest --yes --key env://COSIGN_PRIVATE_KEY --signing-config signing-config.json \
+                --type cyclonedx --predicate reports/sbom.cdx.json \
+                "${REGISTRY}/${IMAGE}@${DIGEST}"
+            '''
+          }
+        }
+      }
+    }
+
+    stage('Update GitOps repo') {
+      steps {
+        container('git') {
+          withCredentials([usernamePassword(credentialsId: 'gitea',
+                                            usernameVariable: 'GIT_USER',
+                                            passwordVariable: 'GIT_TOKEN')]) {
+            sh '''
+              rm -rf manifests
+              git clone --quiet "http://${GIT_USER}:${GIT_TOKEN}@${MANIFESTS_REPO}" manifests
+              cd manifests
+              sed -i "s|digest: .*|digest: \\"${DIGEST}\\"|" overlays/dev/kustomization.yaml
+              git diff
+              git -c user.name=Jenkins -c user.email=jenkins@ci.local \
+                commit -am "ci: deploy demo-app ${TAG} (${DIGEST}) to dev"
+              git push --quiet origin main
+            '''
+          }
+        }
+      }
+    }
+  }
+
+  post {
+    success { echo "Signed ${env.DIGEST} and committed it. Argo CD will roll it out." }
+  }
+}

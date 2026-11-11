@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: demo-dev
+resources:
+  - ../../base
+  - namespace.yaml
+  - networkpolicy.yaml
+images:
+  - name: demo-app
+    newName: secure-registry:5000/demo-app
+    # Jenkins rewrites this line on every successful build. A digest can't be moved
+    # to different content later, unlike a tag, so what was verified is what runs.
+    digest: "__SEED_DIGEST__"
+patches:
+  # The one field project 1's Deployment lacks for the "restricted" Pod Security level.
+  - target:
+      kind: Deployment
+      name: demo-app
+    patch: |-
+      - op: add
+        path: /spec/template/spec/securityContext/seccompProfile
+        value:
+          type: RuntimeDefault

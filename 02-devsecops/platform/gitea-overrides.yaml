@@ -1,0 +1,13 @@
+# Layered on top of project 1's gitea-values.yaml by scripts/06-webhooks.sh.
+
+# Gitea's on-disk queue allows one process at a time. In a rolling update the new pod waits
+# for a lock that the old pod holds until the new pod is ready, so neither ever finishes.
+strategy:
+  type: Recreate
+
+gitea:
+  config:
+    security:
+      # Gitea refuses to call private addresses by default, which protects it from SSRF.
+      # Allow in-cluster services only, not the whole private network.
+      ALLOWED_HOST_LIST: "*.svc.cluster.local"

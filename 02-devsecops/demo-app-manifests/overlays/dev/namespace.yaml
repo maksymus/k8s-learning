@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo-dev
+  labels:
+    # Pod Security admission: reject any pod that doesn't meet the strictest standard.
+    pod-security.kubernetes.io/enforce: restricted
+    # Opts this namespace in to the Kyverno signature check.
+    security.k8s-learning/verify-images: "true"

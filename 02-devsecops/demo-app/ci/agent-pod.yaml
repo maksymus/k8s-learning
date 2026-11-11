@@ -1,0 +1,65 @@
+# Build pod for project 2. Compared with project 1: BuildKit is rootless, and a `tools`
+# container scans and signs the image.
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+    - name: python
+      image: python:3.12-slim
+      command: ["cat"]
+      tty: true
+    - name: sonar
+      image: sonarsource/sonar-scanner-cli:latest
+      imagePullPolicy: IfNotPresent
+      command: ["cat"]
+      tty: true
+    - name: buildkit
+      image: moby/buildkit:v0.20.0-rootless
+      # Nested inside a kind node, BuildKit can't set up its own PID sandbox.
+      args: ["--oci-worker-no-process-sandbox"]
+      securityContext:
+        # No root and no privileged: a build escape now lands as an unprivileged user.
+        # Rootless BuildKit creates user namespaces, which the default seccomp and AppArmor
+        # profiles block. That is why this pod would still fail the PSS "baseline" level.
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: Unconfined
+        appArmorProfile:
+          type: Unconfined
+      volumeMounts:
+        - name: buildkit-state
+          mountPath: /home/user/.local/share/buildkit
+        # buildkitd.toml and the registry CA, written by scripts/03-jenkins.sh
+        - name: buildkitd-config
+          mountPath: /home/user/.config/buildkit
+    - name: tools
+      image: secure-registry:5000/ci-tools:2
+      command: ["cat"]
+      tty: true
+      # Go programs read extra trust roots from here, in addition to the system bundle.
+      env:
+        - name: SSL_CERT_DIR
+          value: /etc/ssl/certs:/etc/registry-ca
+      # Trivy's database mirror. Only exists on a remote WSL host.
+      envFrom:
+        - configMapRef:
+            name: ci-env
+            optional: true
+      volumeMounts:
+        - name: registry-ca
+          mountPath: /etc/registry-ca
+    - name: git
+      image: alpine/git:latest
+      imagePullPolicy: IfNotPresent
+      command: ["cat"]
+      tty: true
+  volumes:
+    - name: buildkit-state
+      emptyDir: {}
+    - name: buildkitd-config
+      configMap:
+        name: buildkitd-config
+    - name: registry-ca
+      configMap:
+        name: registry-ca

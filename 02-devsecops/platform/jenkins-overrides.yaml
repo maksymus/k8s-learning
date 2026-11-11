@@ -1,0 +1,78 @@
+# Layered on top of project 1's jenkins-values.yaml by scripts/03-jenkins.sh.
+# Helm merges maps but replaces lists, and JCasC scripts are replaced whole by key,
+# which is why the list and the credentials script below repeat project 1's entries.
+controller:
+  # Use the plugins project 1 already put on the Jenkins PVC, instead of downloading them on every
+  # pod start. Downloads get reset on a WSL host, and the chart's copy step crashes after a node
+  # restart. It also stops plugin versions changing silently, because the chart installs --latest.
+  # Trade-off: this only works on an existing PVC, so run project 1's 04-jenkins.sh first.
+  installPlugins: false
+
+  # Lets an unauthenticated /git/notifyCommit request start a poll and nothing else.
+  # That is enough for a webhook: Jenkins still decides for itself whether anything changed.
+  javaOpts: "-Dhudson.plugins.git.GitStatus.NOTIFY_COMMIT_ACCESS_CONTROL=disabled-for-polling"
+
+  additionalExistingSecrets:
+    - name: gitea-credentials
+      keyName: username
+    - name: gitea-credentials
+      keyName: token
+    - name: sonar-credentials
+      keyName: token
+    - name: cosign-credentials # created by 02-signing.sh
+      keyName: key
+    - name: cosign-credentials
+      keyName: password
+
+  JCasC:
+    configScripts:
+      credentials: |
+        credentials:
+          system:
+            domainCredentials:
+              - credentials:
+                  - usernamePassword:
+                      scope: GLOBAL
+                      id: gitea
+                      username: "${gitea-credentials-username}"
+                      password: "${gitea-credentials-token}"
+                  - string:
+                      scope: GLOBAL
+                      id: sonar-token
+                      secret: "${sonar-credentials-token}"
+                  - string:
+                      scope: GLOBAL
+                      id: cosign-key
+                      secret: "${cosign-credentials-key}"
+                  - string:
+                      scope: GLOBAL
+                      id: cosign-password
+                      secret: "${cosign-credentials-password}"
+      jobs: |
+        jobs:
+          - script: |
+              pipelineJob('demo-app') {
+                description('CI for demo-app. Started by a Gitea webhook, with an hourly poll as a safety net.')
+                definition {
+                  cpsScm {
+                    scm {
+                      git {
+                        remote {
+                          url('http://gitea-http.gitea.svc.cluster.local:3000/gitea_admin/demo-app.git')
+                          credentials('gitea')
+                        }
+                        branch('*/main')
+                      }
+                    }
+                    scriptPath('Jenkinsfile')
+                    lightweight(true)
+                  }
+                }
+                properties {
+                  pipelineTriggers {
+                    triggers {
+                      pollSCM { scmpoll_spec('H * * * *') }
+                    }
+                  }
+                }
+              }
